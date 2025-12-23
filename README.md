@@ -44,7 +44,7 @@ OPENAI_MODEL=gpt-3.5-turbo
 OPENAI_BASE_URL=https://api.openai.com/v1
 
 # 服务端口（可选，默认：5000）
-FLASK_PORT=5000
+LISTEN_PORT=5000
 ```
 
 ## 使用方法
