@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import aiosqlite
 import asyncio
+import random
 
 # 设置UTF-8编码以正确显示中文
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -25,6 +26,9 @@ if sys.platform == 'win32':
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 load_dotenv()
+
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+CACHE_RETRY_PROBABILITY = float(os.getenv("CACHE_RETRY_PROBABILITY", "0.1"))
 
 class LLMAnswerer:
     def __init__(self, api_key=None, model="gpt-3.5-turbo", db_path="answer_cache.db",
@@ -167,8 +171,11 @@ class LLMAnswerer:
         if not skip_cache:
             cached_answer = await self._get_cached_answer(cache_key)
             if cached_answer:
-                print(f"[缓存命中] 题目: {title[:50]}... -> 答案: {cached_answer}")
-                return [None, cached_answer]
+                if random.random() < CACHE_RETRY_PROBABILITY:
+                    print(f"[缓存命中-随机重试] 题目: {title[:50]}... -> 旧答案: {cached_answer}")
+                else:
+                    print(f"[缓存命中] 题目: {title[:50]}... -> 答案: {cached_answer}")
+                    return [None, cached_answer]
 
         prompt = self._build_prompt(title, options, question_type)
 
@@ -239,15 +246,18 @@ def print_startup_info(answerer_obj, port):
     print("-"*60)
     print("AnswererWrapper配置:")
     print("[")
+
+    headers_config = {"Content-Type": "application/json"}
+    if ACCESS_TOKEN:
+        headers_config["X-Access-Token"] = ACCESS_TOKEN
+
     print(json.dumps({
         "name": "LLM智能答题",
         "url": f"http://localhost:{port}/search",
         "method": "post",
         "contentType": "json",
         "type": "GM_xmlhttpRequest",
-        "headers": {
-            "Content-Type": "application/json"
-        },
+        "headers": headers_config,
         "data": {
             "title": "${title}",
             "options": "${options}",
@@ -274,6 +284,7 @@ async def search(request: Request):
         options = params.get('options')
         question_type = params.get('type')
         skip_cache = GLOBAL_SKIP_CACHE or params.get('skip_cache', 'false').lower() == 'true'
+        token = request.headers.get('X-Access-Token') or params.get('token')
 
         if title and sys.platform == 'win32':
             try:
@@ -292,6 +303,10 @@ async def search(request: Request):
         options = data.get('options')
         question_type = data.get('type')
         skip_cache = GLOBAL_SKIP_CACHE or data.get('skip_cache', False)
+        token = request.headers.get('X-Access-Token') or request.query_params.get('token') or data.get('token')
+
+    if ACCESS_TOKEN and token != ACCESS_TOKEN:
+        return JSONResponse({"code": 0, "msg": "无效的访问令牌"}, status_code=401)
 
     print(f"\n[收到请求] {datetime.now().strftime('%H:%M:%S')} - 题型: {question_type or '未知'}")
     print(f"  题目: {title[:100]}{'...' if len(title) > 100 else ''}")
