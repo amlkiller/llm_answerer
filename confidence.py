@@ -4,6 +4,7 @@
 """
 import os
 import asyncio
+import time
 from openai import AsyncOpenAI
 from search import SearchService
 from dotenv import load_dotenv
@@ -68,6 +69,7 @@ async def _call_llm_with_validation(
     Returns:
         str: 验证通过的答案（如果所有重试都失败，返回最后一次的答案）
     """
+    start_time = time.time()
     answer = None
 
     for attempt in range(max_retries):
@@ -83,20 +85,21 @@ async def _call_llm_with_validation(
             # 验证答案格式
             if validate_answer(answer, question_type):
                 if attempt > 0:
-                    print(f"[{context_description}] 重试成功，答案: {answer}")
+                    print(f"[{context_description}] 验证重试成功，答案: {answer}")
                 return answer
             else:
-                print(f"[{context_description}] 答案格式不规范 (尝试 {attempt + 1}/{max_retries}): {answer}")
+                print(f"[{context_description}] 答案格式不规范 (尝试 {attempt + 1}/{max_retries}: {answer}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
 
         except Exception as e:
-            print(f"[{context_description}] API调用失败 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+            print(f"[{context_description}] API调用失败 (尝试 {attempt + 1}/{max_retries}: {str(e)}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2 ** attempt)
 
     # 所有重试都失败，返回最后一次的答案（可能无效）
-    print(f"[{context_description}] 警告: 所有重试均未能获得有效答案，返回最后一次结果: {answer}")
+    total_elapsed = (time.time() - start_time) * 1000
+    print(f"[{context_description}] 警告: 所有重试均未能获得有效答案，返回最后一次结果: {answer} (总耗时: {total_elapsed:.0f}ms)")
     return answer
 
 
@@ -161,6 +164,8 @@ async def answer_with_confidence(
     Returns:
         str: LLM生成的答案
     """
+    overall_start_time = time.time()
+
     if confidence_threshold is None:
         confidence_threshold = CONFIDENCE_THRESHOLD
 
@@ -168,6 +173,7 @@ async def answer_with_confidence(
     prompt = _build_prompt(title, options, question_type)
 
     # ============== 步骤2: 获取LLM初始答案（带验证） ==============
+    step2_start = time.time()
     answer = await _call_llm_with_validation(
         client=client,
         model=model,
@@ -178,9 +184,11 @@ async def answer_with_confidence(
         question_type=question_type,
         context_description="初始答案获取"
     )
-    print(f"[初始回答] 答案: {answer}")
+    step2_elapsed = (time.time() - step2_start) * 1000
+    print(f"[初始回答] 答案: {answer} (总耗时: {step2_elapsed:.0f}ms)")
 
     # ============== 步骤3: 评估答案置信度（带重试） ==============
+    step3_start = time.time()
     confidence_prompt = f"""题目：{title}
 
 选项：
@@ -194,6 +202,7 @@ async def answer_with_confidence(
     max_confidence_retries = 3
 
     for attempt in range(max_confidence_retries):
+        attempt_start = time.time()
         try:
             confidence_response = await client.chat.completions.create(
                 model=model,
@@ -204,6 +213,7 @@ async def answer_with_confidence(
                 temperature=0.3,
                 max_tokens=10
             )
+            attempt_elapsed = (time.time() - attempt_start) * 1000
 
             confidence_text = confidence_response.choices[0].message.content.strip()
 
@@ -214,30 +224,34 @@ async def answer_with_confidence(
                 confidence = max(0.0, min(1.0, confidence))
                 # 解析成功，跳出循环
                 if attempt > 0:
-                    print(f"[置信度评估] 重试成功，置信度: {confidence:.2f}")
+                    print(f"[置信度评估] 重试成功，置信度: {confidence:.2f} (本次耗时: {attempt_elapsed:.0f}ms)")
                 break
             except ValueError:
-                print(f"[置信度解析失败] 尝试 {attempt + 1}/{max_confidence_retries}, 返回值: '{confidence_text}'")
+                print(f"[置信度解析失败] 尝试 {attempt + 1}/{max_confidence_retries}, 返回值: '{confidence_text}' (耗时: {attempt_elapsed:.0f}ms)")
                 if attempt < max_confidence_retries - 1:
                     await asyncio.sleep(1)
                     continue
 
         except Exception as e:
-            print(f"[置信度评估失败] 尝试 {attempt + 1}/{max_confidence_retries}: {str(e)}")
+            attempt_elapsed = (time.time() - attempt_start) * 1000
+            print(f"[置信度评估失败] 尝试 {attempt + 1}/{max_confidence_retries}: {str(e)} (耗时: {attempt_elapsed:.0f}ms)")
             if attempt < max_confidence_retries - 1:
                 await asyncio.sleep(1)
                 continue
 
+    step3_elapsed = (time.time() - step3_start) * 1000
+
     # 如果所有重试都失败，使用默认值
     if confidence is None:
-        print(f"[置信度评估] 所有重试均失败，使用默认值 0.5")
+        print(f"[置信度评估] 所有重试均失败，使用默认值 0.5 (总耗时: {step3_elapsed:.0f}ms)")
         confidence = 0.5
 
-    print(f"[置信度评估] 答案: {answer}, 置信度: {confidence:.2f}, 阈值: {confidence_threshold:.2f}")
+    print(f"[置信度评估] 答案: {answer}, 置信度: {confidence:.2f}, 阈值: {confidence_threshold:.2f} (总耗时: {step3_elapsed:.0f}ms)")
 
     # ============== 步骤4: 根据置信度决定是否联网搜索 ==============
     if confidence >= confidence_threshold:
-        print(f"[置信度充足] 置信度 {confidence:.2f} >= {confidence_threshold:.2f}, 直接返回答案")
+        overall_elapsed = (time.time() - overall_start_time) * 1000
+        print(f"[置信度充足] 置信度 {confidence:.2f} >= {confidence_threshold:.2f}, 直接返回答案 (总流程耗时: {overall_elapsed:.0f}ms)")
         return answer
 
     # ============== 步骤5: 置信度不足，根据 EXA_API_KEY 配置决定策略 ==============
@@ -255,6 +269,7 @@ async def answer_with_confidence(
                 search_query += f" {options}"
 
             # 调用搜索服务
+            search_start = time.time()
             async with SearchService(verbose=False) as search_service:
                 search_context = await search_service.search_and_extract(
                     query=search_query,
@@ -262,8 +277,9 @@ async def answer_with_confidence(
                     include_url=False,
                     timeout=30
                 )
+            search_elapsed = (time.time() - search_start) * 1000
 
-            print(f"[搜索完成] 获取到上下文信息，长度: {len(search_context)} 字符")
+            print(f"[搜索完成] 获取到上下文信息，长度: {len(search_context)} 字符 (搜索耗时: {search_elapsed:.0f}ms)")
 
             # ============== 步骤6a: 基于搜索结果和第一次答案信息重新回答（带验证） ==============
             # 复用 _build_prompt 函数构建基础 prompt
@@ -284,6 +300,7 @@ async def answer_with_confidence(
 
 请结合搜索信息和首次回答的答案和对应的置信度，重新仔细分析题目，给出更准确的答案。"""
 
+            step6a_start = time.time()
             final_answer = await _call_llm_with_validation(
                 client=client,
                 model=model,
@@ -292,14 +309,17 @@ async def answer_with_confidence(
                     {"role": "user", "content": enhanced_prompt}
                 ],
                 question_type=question_type,
-                context_description="基于搜索和第一次答案回答"
+                context_description="基于搜索和首次答案回答"
             )
+            step6a_elapsed = (time.time() - step6a_start) * 1000
 
-            print(f"[基于搜索回答] 最终答案: {final_answer}")
+            overall_elapsed = (time.time() - overall_start_time) * 1000
+            print(f"[基于搜索回答] 最终答案: {final_answer} (重答耗时: {step6a_elapsed:.0f}ms, 总流程耗时: {overall_elapsed:.0f}ms)")
             return final_answer
 
         except Exception as e:
-            print(f"[搜索失败] {str(e)}, 返回原始答案")
+            overall_elapsed = (time.time() - overall_start_time) * 1000
+            print(f"[搜索失败] {str(e)}, 返回原始答案 (总流程耗时: {overall_elapsed:.0f}ms)")
             return answer
 
     else:
@@ -317,6 +337,7 @@ async def answer_with_confidence(
 
 {base_prompt}"""
 
+        step6b_start = time.time()
         final_answer = await _call_llm_with_validation(
             client=client,
             model=model,
@@ -327,8 +348,10 @@ async def answer_with_confidence(
             question_type=question_type,
             context_description="置信度低重新回答"
         )
+        step6b_elapsed = (time.time() - step6b_start) * 1000
 
-        print(f"[重新回答完成] 最终答案: {final_answer}")
+        overall_elapsed = (time.time() - overall_start_time) * 1000
+        print(f"[重新回答完成] 最终答案: {final_answer} (重答耗时: {step6b_elapsed:.0f}ms, 总流程耗时: {overall_elapsed:.0f}ms)")
         return final_answer
 
 
