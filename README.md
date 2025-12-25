@@ -96,39 +96,50 @@ python llm_answerer.py --skip-cache
 ## 工作流程
 
 ### 完整请求流程
+```mermaid
+graph TD
+    %% 初始流程
+    Start[客户端请求] --> Token[访问令牌验证]
+    Token --> KeyGen[生成缓存 Key<br/>MD5 hash]
+    KeyGen --> CacheCheck{检查缓存}
 
-```
-客户端请求
-    ↓
-访问令牌验证（如已配置）
-    ↓
-生成缓存 Key（MD5 hash）
-    ↓
-检查缓存 ──→ 命中 ──→ 随机重试判断 ──→ 返回缓存
-    ↓ 未命中              ↓ 需要重试
-    ↓ ←─────────────────┘
-调用 LLM 获取初始答案
-    ↓
-LLM 评估答案置信度（0-1）
-    ↓
-置信度 >= 阈值？
-    ↓ 是           ↓ 否
-    ↓              ↓
-    ↓         配置了 EXA_API_KEY？
-    ↓              ↓ 是           ↓ 否
-    ↓              ↓               ↓
-    ↓         联网搜索获取参考   附上首次答案
-    ↓              ↓               ↓
-    ↓         基于搜索结果重答   重新分析题目
-    ↓              ↓               ↓
-    ↓ ←───────────┴───────────────┘
-验证答案格式
-    ↓
-保存到缓存
-    ↓
-返回 JSON 响应
-```
+    %% 缓存命中逻辑
+    CacheCheck -- 命中 --> RetryCheck{随机重试判断}
+    RetryCheck -- 不需要重试 --> ReturnCache[返回缓存]
+    RetryCheck -- 需要重试 --> CallLLM
 
+    %% 缓存未命中逻辑
+    CacheCheck -- 未命中 --> CallLLM[调用 LLM 获取初始答案]
+
+    %% LLM 处理流程
+    CallLLM --> EvalConf[LLM 评估答案置信度<br/>0-1]
+    EvalConf --> ConfCheck{置信度 >= 阈值?}
+
+    %% 置信度高，直接通过
+    ConfCheck -- 是 --> Validate
+
+    %% 置信度低，进入优化分支
+    ConfCheck -- 否 --> ExaCheck{配置了 EXA_API_KEY?}
+
+    %% 联网搜索分支
+    ExaCheck -- 是 --> Search[联网搜索获取参考]
+    Search --> ReAnswerSearch[基于搜索和上次回答重答]
+    ReAnswerSearch --> Validate
+
+    %% 纯重试分支
+    ExaCheck -- 否 --> AttachFirst[附上首次答案]
+    AttachFirst --> ReAnalyze[重新分析题目]
+    ReAnalyze --> Validate
+
+    %% 收尾流程
+    Validate[验证答案格式] --> Save[保存到缓存]
+    Save --> EndNode[返回 JSON 响应]
+
+    %% 样式美化（可选）
+    style Start fill:#f9f,stroke:#333,stroke-width:2px
+    style EndNode fill:#9f9,stroke:#333,stroke-width:2px
+    style ReturnCache fill:#9f9,stroke:#333,stroke-width:2px
+```
 ### 置信度增强机制
 
 当 LLM 对答案的置信度低于阈值时，系统会自动启用增强策略：
