@@ -1,6 +1,7 @@
-# LLM 智能答题服务
+# OCS AI 答题题库
 
 基于大语言模型（LLM）的智能答题服务，支持单选、多选、判断、填空等多种题型。提供 HTTP API 接口、本地缓存功能、置信度评估和智能联网搜索增强。
+适用于OCS网课助手的AI题库。有高准确率，快速回答等特性，是从水客中解放你的不二选择。
 <img width="2095" height="1028" alt="image" src="https://github.com/user-attachments/assets/568274d0-8a07-43bd-80b4-b19497b0e4e7" />
 
 ## 核心特性
